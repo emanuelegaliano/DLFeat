@@ -5,12 +5,12 @@
 </p>
 
 <p align="center">
-  <a href="YOUR_GITHUB_PAGES_LINK_HERE">
+  <a href="https://antoninofurnari.github.io/DLFeat/">
     <img src="https://img.shields.io/badge/docs-gh--pages-blue.svg" alt="Documentation Status">
   </a>
   <!--<a href="https://pypi.org/project/dlfeat/"> <img src="https://img.shields.io/pypi/v/dlfeat.svg" alt="PyPI version">
   </a>-->
-  <a href="YOUR_LICENSE_LINK_HERE"> <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License"> </a>
+  <a > <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License"> </a>
   <!-- <a href="YOUR_ACTIONS_LINK_HERE">
     <img src="https://github.com/YOUR_USERNAME/YOUR_REPOSITORY_NAME/actions/workflows/YOUR_CI_WORKFLOW.yml/badge.svg" alt="Build Status">
   </a> -->
