@@ -7,8 +7,8 @@ import sys
 sys.path.insert(0, os.path.abspath('../..')) 
 
 project = 'DLFeat'
-copyright = '2025, Your Name/Gemini' # UPDATE THIS
-author = 'Your Name/Gemini'         # UPDATE THIS
+copyright = '2025, Your Antonino Furnari' # UPDATE THIS
+author = 'Antonino Furnari/Gemini'         # UPDATE THIS
 release = '0.3.1' # UPDATE THIS to your current DLFeat version
 
 extensions = [
