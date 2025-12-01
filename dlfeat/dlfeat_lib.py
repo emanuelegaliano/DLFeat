@@ -194,6 +194,336 @@ DEFAULT_MODELS_TO_TEST = [
 ]
 
 
+def _ensure_unique_model_name(model_name, overwrite):
+    if not isinstance(model_name, str):
+        raise TypeError("model_name must be a string.")
+    if model_name in MODEL_CONFIGS and not overwrite:
+        raise ValueError(
+            "Model '%s' is already present in MODEL_CONFIGS. "
+            "Use overwrite=True if you really want to replace it." % model_name
+        )
+
+
+def _resolve_model_builder(model_name, model, model_builder):
+    """
+    Internal helper:
+    - allow passing EITHER a ready torch.nn.Module instance (model)
+      OR a callable(model_builder) that takes a torch.device.
+    - always return a valid model_builder(device) -> nn.Module
+    """
+
+    if model is None and model_builder is None:
+        raise ValueError(
+            "You must provide either 'model' (a torch.nn.Module instance) "
+            "or 'model_builder' (callable(device) -> torch.nn.Module) "
+            "for model '%s'." % model_name
+        )
+
+    if model is not None and model_builder is not None:
+        raise ValueError(
+            "You cannot provide both 'model' and 'model_builder' for model '%s'. "
+            "Use only one of them." % model_name
+        )
+
+    if model is not None:
+        # Pre-instantiated model case
+        if not isinstance(model, torch.nn.Module):
+            raise TypeError(
+                "Parameter 'model' for '%s' must be a torch.nn.Module instance, "
+                "got %s." % (model_name, type(model))
+            )
+
+        # Wrap the instance into a builder so that existing _load_model
+        # logic (which expects model_builder(device)) keeps working.
+        def _builder(device, _model=model):
+            # _load_model will take care of .to(device) and .eval()
+            return _model
+
+        return _builder
+
+    # builder case
+    if not callable(model_builder):
+        raise TypeError(
+            "model_builder for '%s' must be callable and accept a torch.device."
+            % model_name
+        )
+    return model_builder
+
+
+def register_image_model(
+    model_name,
+    dim,
+    model=None,
+    model_builder=None,
+    input_size=224,
+    image_transform=None,
+    overwrite=False,
+    **extra_config,
+):
+    """
+    Register a custom PyTorch image model.
+
+    Parameters
+    ----------
+    model_name : str
+        Unique name for the model.
+    dim : int
+        Output feature dimensionality.
+    model : torch.nn.Module, optional
+        Pre-instantiated PyTorch model (already loaded with weights).
+        Mutually exclusive with model_builder.
+    model_builder : callable(device) -> torch.nn.Module, optional
+        Function that builds and returns the model. Mutually exclusive with model.
+    input_size : int
+        Image size (H = W).
+    image_transform : callable(PIL.Image) -> torch.Tensor, optional
+        Transform from PIL.Image to (C, H, W) tensor. If None, a standard
+        ImageNet-like transform is used.
+    overwrite : bool
+        If True, overwrite an existing entry with the same name.
+    """
+    _ensure_unique_model_name(model_name, overwrite)
+
+    # Resolve to a single builder
+    model_builder = _resolve_model_builder(model_name, model, model_builder)
+
+    if image_transform is None:
+        image_transform = T.Compose([
+            T.Resize(256),
+            T.CenterCrop(input_size),
+            T.ToTensor(),
+            T.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225],
+            ),
+        ])
+
+    cfg = {
+        "task": "image",
+        "dim": int(dim),
+        "source": "local",
+        "input_size": int(input_size),
+        "model_builder": model_builder,
+        "image_transform": image_transform,
+    }
+    cfg.update(extra_config)
+    MODEL_CONFIGS[model_name] = cfg
+
+
+def register_video_model(
+    model_name,
+    dim,
+    model=None,
+    model_builder=None,
+    clip_len=16,
+    input_size=224,
+    frame_rate=None,
+    video_frame_transform=None,
+    overwrite=False,
+    **extra_config,
+):
+    """
+    Register a custom PyTorch video model.
+
+    The model is expected to take input of shape (B, C, T, H, W) and return
+    features of shape (B, dim).
+
+    You can pass either:
+    - model: a ready torch.nn.Module instance
+    - model_builder: a callable(device) -> torch.nn.Module
+    """
+    _ensure_unique_model_name(model_name, overwrite)
+
+    model_builder = _resolve_model_builder(model_name, model, model_builder)
+
+    cfg = {
+        "task": "video",
+        "dim": int(dim),
+        "source": "local",
+        "model_builder": model_builder,
+        "clip_len": int(clip_len),
+        "input_size": int(input_size),
+    }
+    if frame_rate is not None:
+        cfg["frame_rate"] = frame_rate
+    if video_frame_transform is not None:
+        cfg["video_frame_transform"] = video_frame_transform
+
+    cfg.update(extra_config)
+    MODEL_CONFIGS[model_name] = cfg
+
+
+def register_audio_model(
+    model_name,
+    dim,
+    model=None,
+    model_builder=None,
+    sampling_rate=16000,
+    audio_preprocess=None,
+    overwrite=False,
+    **extra_config,
+):
+    """
+    Register a custom PyTorch audio model.
+
+    Parameters
+    ----------
+    model_name : str
+        Unique name for the model.
+    dim : int
+        Output feature dimensionality.
+    model : torch.nn.Module, optional
+        Pre-instantiated PyTorch model. Mutually exclusive with model_builder.
+    model_builder : callable(device) -> torch.nn.Module, optional
+        Builder for the model. Mutually exclusive with model.
+    sampling_rate : int
+        Target sampling rate used in the preprocessing pipeline.
+    audio_preprocess : callable, optional
+        If provided, must take `audio_input` (e.g. file path) and return
+        a dict of tensors ready to be passed to `model(**inputs)`.
+        If None, DLFeat's default torchaudio + HF-style preprocess is used
+        (for non-local HF models).
+    """
+    _ensure_unique_model_name(model_name, overwrite)
+
+    model_builder = _resolve_model_builder(model_name, model, model_builder)
+
+    cfg = {
+        "task": "audio",
+        "dim": int(dim),
+        "source": "local",
+        "model_builder": model_builder,
+        "sampling_rate": int(sampling_rate),
+        "target_sr": int(sampling_rate),
+    }
+    if audio_preprocess is not None:
+        cfg["audio_preprocess"] = audio_preprocess
+
+    cfg.update(extra_config)
+    MODEL_CONFIGS[model_name] = cfg
+
+
+def register_text_model(
+    model_name,
+    dim,
+    model=None,
+    model_builder=None,
+    tokenizer=None,
+    overwrite=False,
+    **extra_config,
+):
+    """
+    Register a custom PyTorch text model.
+
+    The tokenizer must take a list of strings and return a dict of tensors
+    (like HuggingFace tokenizers): tokenizer(texts, return_tensors="pt", ...)
+
+    You can pass either:
+    - model: a ready torch.nn.Module instance
+    - model_builder: a callable(device) -> torch.nn.Module
+    """
+    _ensure_unique_model_name(model_name, overwrite)
+
+    if tokenizer is None:
+        raise ValueError("You must provide a 'tokenizer' for text models.")
+    if not callable(tokenizer):
+        raise TypeError("tokenizer must be callable.")
+
+    model_builder = _resolve_model_builder(model_name, model, model_builder)
+
+    cfg = {
+        "task": "text",
+        "dim": int(dim),
+        "source": "local",
+        "model_builder": model_builder,
+        "tokenizer": tokenizer,
+    }
+    cfg.update(extra_config)
+    MODEL_CONFIGS[model_name] = cfg
+
+
+def register_multimodal_image_text_model(
+    model_name,
+    dim,
+    model=None,
+    model_builder=None,
+    processor=None,
+    overwrite=False,
+    **extra_config,
+):
+    """
+    Register a custom image-text model.
+
+    The processor must accept `text=[...], images=[...]` and return
+    a dict of tensors. The model is expected to return attributes
+    `.image_embeds` and `.text_embeds` when called as `model(**inputs)`.
+
+    You can pass either:
+    - model: a ready torch.nn.Module instance
+    - model_builder: a callable(device) -> torch.nn.Module
+    """
+    _ensure_unique_model_name(model_name, overwrite)
+
+    if processor is None:
+        raise ValueError("You must provide a 'processor' for multimodal image-text models.")
+    if not callable(processor):
+        raise TypeError("processor must be callable.")
+
+    model_builder = _resolve_model_builder(model_name, model, model_builder)
+
+    cfg = {
+        "task": "multimodal_image_text",
+        "dim": int(dim),
+        "source": "local",
+        "model_builder": model_builder,
+        "processor": processor,
+    }
+    cfg.update(extra_config)
+    MODEL_CONFIGS[model_name] = cfg
+
+
+def register_multimodal_video_text_model(
+    model_name,
+    dim,
+    model=None,
+    model_builder=None,
+    processor=None,
+    num_frames=8,
+    overwrite=False,
+    **extra_config,
+):
+    """
+    Register a custom video-text model.
+
+    The processor must accept `text=[...] , videos=[list_of_frame_lists]`
+    and return a dict of tensors. The model is expected to return attributes
+    `.video_embeds` and `.text_embeds`.
+
+    You can pass either:
+    - model: a ready torch.nn.Module instance
+    - model_builder: a callable(device) -> torch.nn.Module
+    """
+    _ensure_unique_model_name(model_name, overwrite)
+
+    if processor is None:
+        raise ValueError("You must provide a 'processor' for multimodal video-text models.")
+    if not callable(processor):
+        raise TypeError("processor must be callable.")
+
+    model_builder = _resolve_model_builder(model_name, model, model_builder)
+
+    cfg = {
+        "task": "multimodal_video_text",
+        "dim": int(dim),
+        "source": "local",
+        "model_builder": model_builder,
+        "processor": processor,
+        "num_frames": int(num_frames),
+    }
+    cfg.update(extra_config)
+    MODEL_CONFIGS[model_name] = cfg
+
+
 def list_available_models(task_type=None):
     if task_type:
         return [name for name, config in MODEL_CONFIGS.items() if config["task"] == task_type]
@@ -337,6 +667,47 @@ class DLFeatExtractor(BaseEstimator, TransformerMixin):
         self.model.eval().to(self.device)
 
     def _load_model(self):
+        # 0) Custom models registered via register_*_model
+        custom_builder = self.config.get("model_builder")
+        if custom_builder is not None:
+            if not callable(custom_builder):
+                raise TypeError(
+                    "Custom builder for model '%s' must be callable, got %s"
+                    % (self.model_name, type(custom_builder))
+                )
+
+            self.model = custom_builder(self.device)
+
+            if not isinstance(self.model, torch.nn.Module):
+                raise TypeError(
+                    "Custom builder for model '%s' must return a torch.nn.Module, got %s"
+                    % (self.model_name, type(self.model))
+                )
+
+            # Make sure model is on the right device and in eval mode
+            self.model.to(self.device)  # type: ignore
+            self.model.eval()           # type: ignore
+
+            # Optional components coming from config
+            if "image_transform" in self.config:
+                self.image_transform = self.config["image_transform"]
+            if "audio_resampler" in self.config:
+                self.audio_resampler = self.config["audio_resampler"]
+            if "video_frame_transform" in self.config:
+                self.video_frame_transform = self.config["video_frame_transform"]
+            if "processor" in self.config:
+                self.processor = self.config["processor"]
+            if "tokenizer" in self.config:
+                self.tokenizer = self.config["tokenizer"]
+            if "target_sr" in self.config:
+                self.target_sr = self.config["target_sr"]
+            elif "sampling_rate" in self.config:
+                self.target_sr = self.config["sampling_rate"]
+
+            # Done: no built-in loading for local models
+            return
+
+        # 1) Built-in models (original behavior)
         source = self.config["source"]
         self.video_frame_transform = None 
 
@@ -493,6 +864,7 @@ class DLFeatExtractor(BaseEstimator, TransformerMixin):
             
         else:
             raise ValueError(f"Unsupported task type: {self.task_type}")
+
         
     def _preprocess_image(self, image_input):
         if isinstance(image_input, str):
@@ -592,22 +964,55 @@ class DLFeatExtractor(BaseEstimator, TransformerMixin):
             return self.processor(images=video_frames_list, return_tensors="pt") 
     
     def _preprocess_audio(self, audio_input):
+        # 1) Custom audio preprocessing override (for local models)
+        custom_audio_preprocess = self.config.get("audio_preprocess")
+        if custom_audio_preprocess is not None:
+            return custom_audio_preprocess(audio_input)
+
+        # 2) Default HF wav2vec / AST pipeline
         if not hasattr(TA, 'Resample'): 
              raise ImportError("Torchaudio (transforms.Resample) dummy class detected or not installed.")
+
         if isinstance(audio_input, str):
-            if not os.path.exists(audio_input): raise FileNotFoundError(f"Audio file: {audio_input}")
-            try: waveform, sr = torchaudio.load(audio_input) 
-            except Exception as e: raise RuntimeError(f"Failed to load {audio_input}: {e}")
-        else: raise TypeError("Audio input must be a file path.")
+            if not os.path.exists(audio_input):
+                raise FileNotFoundError(f"Audio file: {audio_input}")
+            try:
+                waveform, sr = torchaudio.load(audio_input)
+            except Exception as e:
+                raise RuntimeError(f"Failed to load {audio_input}: {e}")
+        else:
+            raise TypeError("Audio input must be a file path.")
+
+        if self.target_sr is None:
+            raise RuntimeError(
+                "target_sr is not set. For audio models, make sure 'sampling_rate' "
+                "or 'target_sr' is defined in MODEL_CONFIGS or via registration."
+            )
+
         if sr != self.target_sr:
             if self.audio_resampler is None or self.audio_resampler.orig_freq != sr:
                 ResamplerClass = TA.Resample 
-                self.audio_resampler = ResamplerClass(orig_freq=sr, new_freq=self.target_sr,dtype=waveform.dtype).to(waveform.device) 
+                self.audio_resampler = ResamplerClass(
+                    orig_freq=sr,
+                    new_freq=self.target_sr,
+                    dtype=waveform.dtype
+                ).to(waveform.device)
             waveform = self.audio_resampler(waveform)
-        if waveform.shape[0] > 1: waveform = torch.mean(waveform, dim=0, keepdim=True) 
+
+        if waveform.shape[0] > 1:
+            waveform = torch.mean(waveform, dim=0, keepdim=True) 
+
         processed_input_data = waveform.squeeze(0).numpy() 
-        if self.model_name.startswith("ast"): processed_input_data = waveform.squeeze(0) 
-        return self.processor(processed_input_data, sampling_rate=self.target_sr, return_tensors="pt", padding=True)
+        if self.model_name.startswith("ast"):
+            processed_input_data = waveform.squeeze(0) 
+
+        return self.processor( # type: ignore
+            processed_input_data,
+            sampling_rate=self.target_sr,
+            return_tensors="pt",
+            padding=True
+        )
+
 
     @torch.no_grad()
     def fit(self, X, y=None):
@@ -694,19 +1099,41 @@ class DLFeatExtractor(BaseEstimator, TransformerMixin):
 
         elif self.task_type == "multimodal_image_text":
             img_feats_list, text_feats_list = [], []
+
             for i in range(0, len(X), batch_size):
                 batch_tuples = X[i:i+batch_size]
-                pil_images = [Image.open(item[0]).convert("RGB") if isinstance(item[0], str) else item[0].convert("RGB") for item in batch_tuples]
+
+                pil_images = [
+                    Image.open(item[0]).convert("RGB") if isinstance(item[0], str)
+                    else item[0].convert("RGB")
+                    for item in batch_tuples
+                ]
                 str_texts = [item[1] for item in batch_tuples]
-                inputs = self.processor(text=str_texts, images=pil_images, return_tensors="pt", padding=True, truncation=True)
+
+                inputs = self.processor( # type: ignore
+                    text=str_texts,
+                    images=pil_images,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                )
                 inputs = {k: v.to(self.device) for k, v in inputs.items()}
-                if self.model_name.startswith("clip"):
-                    outputs = self.model(**inputs)
+
+                outputs = self.model(**inputs)
+
+                if hasattr(outputs, "image_embeds") and hasattr(outputs, "text_embeds"):
                     img_feats_list.append(outputs.image_embeds.cpu().numpy())
                     text_feats_list.append(outputs.text_embeds.cpu().numpy())
-                else: raise NotImplementedError 
-            final_output_dict = {"image_features": np.concatenate(img_feats_list, axis=0) if img_feats_list else np.array([]),
-                                 "text_features": np.concatenate(text_feats_list, axis=0) if text_feats_list else np.array([])}
+                else:
+                    raise RuntimeError(
+                        f"Multimodal image-text model '{self.model_name}' must return "
+                        f"`image_embeds` and `text_embeds` tensors."
+                    )
+
+            final_output_dict = {
+                "image_features": np.concatenate(img_feats_list, axis=0) if img_feats_list else np.array([]),
+                "text_features": np.concatenate(text_feats_list, axis=0) if text_feats_list else np.array([]),
+            }
             return final_output_dict
 
 
