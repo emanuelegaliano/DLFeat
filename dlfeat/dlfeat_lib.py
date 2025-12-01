@@ -1307,4 +1307,8 @@ def run_self_tests(models_to_test='all', device='cpu', verbose=True, attempt_rea
     return test_results_list
 
 if __name__ == '__main__':
-    results = run_self_tests(attempt_real_video_test=True, verbose=True) 
+    results = run_self_tests(
+        attempt_real_video_test=False, 
+        verbose=True,
+        device='cuda',
+        ) 
