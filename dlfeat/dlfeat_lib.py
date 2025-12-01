@@ -33,7 +33,7 @@ For detailed installation instructions, a "Getting Started" guide with code exam
 the complete Model Zoo, and API reference, please refer to the full documentation.
 """
 
-__version__ = "0.5.0" 
+__version__ = "0.5.1" 
 
 import torch
 import torchvision 
